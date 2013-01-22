@@ -1,3 +1,6 @@
+0.4:
+- Upgrade to GDK3.
+
 0.3:
 - Added short options -D for --dir and -g for --geometry
 - Bugfix for when pictures couldn't be parsed by GDK

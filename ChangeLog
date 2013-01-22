@@ -1,3 +1,11 @@
+2013-1-21   Allan wirth <allan@allanwirth.com>
+
+   * hot-babe.c: Upgrade to GDK3
+
+   * loader.c:   Upgrade to GDK3
+
+   * loader.h:   Upgrade to GDK3
+
 2012-9-01   Allan Wirth <allan@allanwirth.com>
 
    * hot-babe.c: Added short options -D for --dir and -g for --geomtry

@@ -17,7 +17,7 @@
 
 #define DESCR "descr"
 
-#define VERSION "0.3.0"
+#define VERSION "0.4"
 
 #define PNAME "hot-babe"
 
