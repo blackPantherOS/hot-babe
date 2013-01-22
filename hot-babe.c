@@ -164,18 +164,17 @@ static void create_hotbabe_window(void) {
   attr.wmclass_name = PNAME;
   attr.wmclass_class = PNAME;
   attr.window_type = GDK_WINDOW_TOPLEVEL;
+  attr.visual = NULL;
   if (bm.composited == FORCE_COMPOSITE || bm.composited == AUTO_COMPOSITE) {
     attr.visual = gdk_screen_get_rgba_visual(defscrn);
-    attr.colormap = gdk_screen_get_rgba_colormap(defscrn);
-    if (bm.composited == AUTO_COMPOSITE && !(attr.visual && attr.colormap))
+    if (bm.composited == AUTO_COMPOSITE && !attr.visual)
         bm.composited = AUTO_NOCOMPOSITE;
   }
   if (bm.composited == FORCE_NOCOMPOSITE || bm.composited == AUTO_NOCOMPOSITE) {
-    attr.visual = gdk_screen_get_rgb_visual(defscrn);
-    attr.colormap = gdk_screen_get_rgb_colormap(defscrn);
+    attr.visual = gdk_screen_get_system_visual(defscrn);
   }
-  if (!attr.visual || !attr.colormap) {
-    g_printerr("Error getting gdk screen visual and colormap.\n");
+  if (!attr.visual) {
+    g_printerr("Error getting gdk screen visual.\n");
     exit(1);
   }
 
@@ -185,7 +184,7 @@ static void create_hotbabe_window(void) {
 
   bm.win = gdk_window_new(NULL, &attr,
       GDK_WA_TITLE | GDK_WA_WMCLASS | GDK_WA_TYPE_HINT |
-      GDK_WA_VISUAL | GDK_WA_COLORMAP | GDK_WA_X | GDK_WA_Y);
+      GDK_WA_VISUAL | GDK_WA_X | GDK_WA_Y);
   if (!bm.win) {
     g_printerr("Error making toplevel window\n");
     exit(1);
@@ -197,7 +196,7 @@ static void create_hotbabe_window(void) {
 //  gdk_window_set_keep_below(bm.win, TRUE);
 
   if (bm.composited == FORCE_NOCOMPOSITE || bm.composited == AUTO_NOCOMPOSITE) {
-    gdk_window_shape_combine_mask(bm.win, bm.anim.mask, 0, 0);
+    gdk_window_shape_combine_region(bm.win, bm.anim.mask, 0, 0);
   }
 
   gdk_window_show(bm.win);
@@ -220,7 +219,6 @@ static void hotbabe_update(gboolean force) {
   }
 
   if (loadPercentage != bm.oldPercentage || force) {
-    GdkPixmap *next;
     cairo_t *cr;
     cairo_surface_t *p3;
 
@@ -235,15 +233,16 @@ static void hotbabe_update(gboolean force) {
 
     loadPercentage -= range * floor(loadPercentage/range); /* modulo */
 
-    next = gdk_pixmap_new(bm.win, bm.anim.width, bm.anim.height, -1);
-    if (!next) {
-      g_printerr("Error creating gdk pixmap\n");
+    cairo_rectangle_int_t rect = {0, 0, bm.anim.width, bm.anim.height};
+    cairo_region_t *reg = cairo_region_create_rectangle(&rect);
+    gdk_window_begin_paint_region(bm.win, reg);
+    cairo_region_destroy(reg);
+
+    if (!(cr = gdk_cairo_create(bm.win))) {
+      g_printerr("Error creating cairo object\n");
       exit(1);
     }
-    if (!(cr = gdk_cairo_create(next))) {
-      g_printerr("Error creating cairo surface\n");
-      exit(1);
-    }
+
     cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
     cairo_paint(cr);
     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
@@ -253,10 +252,7 @@ static void hotbabe_update(gboolean force) {
     cairo_paint_with_alpha(cr, 1 - loadPercentage / range);
     cairo_destroy(cr);
 
-    gdk_window_set_back_pixmap(bm.win, next, FALSE);
-    g_object_unref(next);
-
-    gdk_window_clear(bm.win);
+    gdk_window_end_paint(bm.win);
   }
 }
 

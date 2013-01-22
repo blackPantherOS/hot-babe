@@ -23,7 +23,7 @@ typedef struct {
   gint height, width;
   gsize samples;
   cairo_surface_t **surface;
-  GdkBitmap *mask;
+  cairo_region_t *mask;
 } HotBabeAnim;
 
 gboolean load_anim(HotBabeAnim * anim, const gchar *dirname);

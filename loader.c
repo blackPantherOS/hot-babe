@@ -110,7 +110,7 @@ gboolean load_anim(HotBabeAnim * anim, const gchar *dirname) {
         gdk_pixbuf_get_bits_per_sample(pixbuf));
   }
 
-  gdk_pixbuf_render_pixmap_and_mask(pixbuf, NULL, &anim->mask, 127);
+  anim->mask = gdk_cairo_region_create_from_surface(anim->surface[anim->samples-1]);
 
   result = TRUE;
 

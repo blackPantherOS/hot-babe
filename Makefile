@@ -2,13 +2,13 @@ PREFIX := /usr/local
 
 # optimization cflags
 CFLAGS += -O2 -Wall -Wextra -DPREFIX=\"$(PREFIX)\" -g
-CFLAGS += `pkg-config gdk-2.0 gdk-pixbuf-2.0 --cflags` -std=gnu99
+CFLAGS += `pkg-config gdk-3.0 --cflags` -std=gnu99
 CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers 
 CFLAGS += -Wno-sign-compare
 
 OBJS = hot-babe.o loader.o
 CC = gcc
-LIBS = `pkg-config gdk-2.0 gdk-pixbuf-2.0 --libs`
+LIBS = `pkg-config gdk-3.0 --libs`
 
 DOC = ChangeLog NEWS LICENSE CONTRIBUTORS copyright config.example
 
