@@ -1,5 +1,6 @@
 0.4:
 - Upgrade to GDK3.
+- update to using standard system XDG dirs
 
 0.3:
 - Added short options -D for --dir and -g for --geometry
