@@ -21,7 +21,7 @@
 
 #define PNAME "hot-babe"
 
-#define CONFIG_FNAME "config" /* Filename in ~/.hot-babe for config */
+#define CONFIG_FNAME "config" /* Filename in hot-babe dir for config */
 
 #define NUM_SAMPLES 16
 

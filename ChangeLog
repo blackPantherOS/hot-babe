@@ -1,6 +1,7 @@
 2013-1-21   Allan wirth <allan@allanwirth.com>
 
    * hot-babe.c: Upgrade to GDK3
+                 Switch to using system data/config dirs
 
    * loader.c:   Upgrade to GDK3
 
