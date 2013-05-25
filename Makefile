@@ -6,7 +6,7 @@ CFLAGS += `pkg-config gdk-3.0 --cflags` -std=gnu99
 CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers 
 CFLAGS += -Wno-sign-compare
 
-OBJS = src/hot-babe.o src/loader.o
+OBJS = src/hot-babe.o src/loader.o src/stats.o src/config.o
 CC = gcc
 LIBS = `pkg-config gdk-3.0 --libs`
 
