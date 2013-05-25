@@ -6,7 +6,7 @@ CFLAGS += `pkg-config gdk-3.0 --cflags` -std=gnu99
 CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers 
 CFLAGS += -Wno-sign-compare
 
-OBJS = hot-babe.o loader.o
+OBJS = src/hot-babe.o src/loader.o
 CC = gcc
 LIBS = `pkg-config gdk-3.0 --libs`
 
@@ -18,7 +18,7 @@ hot-babe: $(OBJS)
 	$(CC) $(LDFLAGS) -o hot-babe $(OBJS) $(LIBS)
 
 clean:
-	rm -f hot-babe *.o
+	rm -f hot-babe src/*.o
 
 install:
 	install -d $(DESTDIR)$(PREFIX)/bin
