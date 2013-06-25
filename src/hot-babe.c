@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <math.h>
+#include <errno.h>
 
 #include "def.h"
 #include "stats.h"
@@ -199,7 +200,12 @@ int main(int argc, char **argv) {
 
   bm.threshold = CLAMP(bm.threshold/100.0, 0.0, 1.0);
 
-  if (bm.nice) nice(bm.nice);
+  if (bm.nice) {
+    errno = 0;
+    if (nice(bm.nice) == -1 && errno != 0) {
+      g_printerr("Failed to nice!\n");
+    }
+  }
 
   if (!hotbabe_load_pics()) {
     g_printerr("Couldn't load pictures\n");
