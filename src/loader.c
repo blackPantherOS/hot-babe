@@ -1,7 +1,6 @@
-/* Hot-babe
+/* Hot-babe 
  * Copyright (C) 2002 DindinX & Cyprien
  * Copyright (C) 2002 Bruno Bellamy.
- * Copyright (C) 2012 Allan Wirth <allan@allanwirth.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the artistic License
@@ -13,120 +12,90 @@
  *
  */
 
-#include <glib.h>
+/* general includes */
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
 
-#include "def.h"
+/* filesystem includes */
+#include <sys/types.h>
+#include <sys/stat.h>
+
+/* x11 includes */
+#include <gdk/gdk.h>
+#include <gdk/gdkx.h>
+#include <gdk-pixbuf/gdk-pixbuf.h>
+
 #include "loader.h"
 
 /* Animation loader from a directory */
-gboolean load_anim(HotBabeAnim * anim, const gchar *dirname) {
-  GIOChannel *fd = NULL;
-  gchar *filename = NULL;
-  gchar *line = NULL;
-  GError *err = NULL;
-  gboolean result = FALSE;
-  GdkPixbuf *pixbuf = NULL;
-  gint64 temp;
+int load_anim( HotBabeAnim *anim, gchar *dirname )
+{
+  struct stat buf;
+  int ret;
+  FILE *fd;
+  char filename[1024];
+  char line[1024];
+  int i;
 
   anim->samples = 0;
-  anim->width = -1;
-  anim->height = -1;
+  anim->current_sample = 0;
 
   /* dirname must be a valid directory */
 
-  if (!dirname || !g_file_test(dirname, G_FILE_TEST_IS_DIR)) {
-    /* Don't print an error because we always try invalid directories */
-    return FALSE;
+  if( dirname == NULL ) return 1;
+  if( (ret = stat( dirname, &buf )) < 0 ) {
+    return 1;
+  }
+  if( !S_ISDIR(buf.st_mode) ) {
+    return 2;
   }
 
   /* description file */
-  filename = g_build_filename(dirname, DESCR, NULL);
-  if ((fd = g_io_channel_new_file(filename, "r", &err)) == NULL) {
-    g_printerr("Failed to open file %s: %s\n", filename, err->message);
-    goto cleanup;
+  
+  strncpy( filename, dirname, 512 );
+  strcat( filename, "/descr" );
+  if( (fd = fopen( filename, "r" )) == NULL ) {
+    perror( filename );
+    return 3;
   }
 
-  if (g_io_channel_read_line(fd, &line, NULL, NULL, &err) !=
-      G_IO_STATUS_NORMAL) {
-    g_printerr("Failed to read file %s: %s\n", filename, err->message);
-    goto cleanup;
+  if( fgets( line, 1023, fd ) == NULL )
+  {
+    fclose( fd );
+    perror( "--" );
+    return 4;
   }
 
-  temp = g_ascii_strtoll(line, NULL, 0);
-  if (temp <= 0 || temp >= G_MAXSIZE) {
-    g_printerr("%s: bad file format (first line not a number)\n", filename);
-    goto cleanup;
+  if( (anim->samples = atoi( line )) == 0 ) {
+    fclose( fd );
+    fprintf( stderr, "%s: bad file format\n", filename );
+    return 4;
   }
-  anim->samples = temp;
 
   /* load images */
-  anim->surface = g_malloc_n(anim->samples, sizeof(cairo_surface_t *));
-  if (!anim->surface) {
-    g_printerr("Error allocating buffer for surfaces.\n");
-    goto cleanup;
-  }
-  for (gsize i = 0; i < anim->samples; i++) {
-    gsize n;
-    cairo_t *cr;
-
-    if (pixbuf) g_object_unref(pixbuf);
-
-    g_free(line);
-    g_free(filename);
-    line = NULL;
-    filename = NULL;
-
-    if (g_io_channel_read_line(fd, &line, NULL, &n, &err) !=
-        G_IO_STATUS_NORMAL) {
-      g_printerr("Error reading line from %s: %s\n", filename, err->message);
-      goto cleanup;
+  
+  anim->pixbuf = malloc( sizeof(GdkPixbuf*) * anim->samples );
+  for( i = 0 ; i < anim->samples ; i++ ) {
+    if( fgets( line, 512, fd ) == NULL ) {
+      fclose( fd );
+      perror( "--" );
+      return 5;
     }
-    line[n] = '\0';
-    filename = g_build_filename(dirname, line, NULL);
-    if (!(pixbuf = gdk_pixbuf_new_from_file(filename, &err))) {
-      g_printerr("Unable to create GDK Pixbuf from %s: %s\n", filename,
-          err->message);
-      goto cleanup;
-    }
-    gint w = gdk_pixbuf_get_width(pixbuf);
-    gint h = gdk_pixbuf_get_height(pixbuf);
-    if (anim->width == -1 && anim->height == -1) {
-      anim->width = w;
-      anim->height = h;
-    } else if (anim->width != w || anim->height != h) {
-      g_printerr("Images do not all have the same width.\n");
-      goto cleanup;
-    }
-    anim->surface[i] = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
-
-    if (!(cr = cairo_create(anim->surface[i]))) {
-      g_printerr("Error creating cairo surface from %s\n", line);
-      goto cleanup;
-    }
-    gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
-    cairo_paint(cr);
-    cairo_destroy(cr);
-    g_print("Loaded image %s (%dx%d, %dbpp)\n", line, w, h,
-        gdk_pixbuf_get_bits_per_sample(pixbuf));
+    if( line[strlen(line)-1] == '\n' )
+      line[strlen(line)-1] = '\0';
+    strncpy( filename, dirname, 512 );
+    strcat( filename, "/" );
+    strcat( filename, line );
+    /* FIXME: I'm a bad boy, I should use a real GError -temsa */
+    anim->pixbuf[i] = gdk_pixbuf_new_from_file( filename, NULL );
   }
 
-  anim->mask = gdk_cairo_region_create_from_surface(anim->surface[anim->samples-1]);
+  fclose( fd );
 
-  result = TRUE;
+  anim->width  = gdk_pixbuf_get_width( anim->pixbuf[0]);
+  anim->height = gdk_pixbuf_get_height(anim->pixbuf[0]);
 
-cleanup:
-  if (err) g_error_free(err);
-
-  if (pixbuf) g_object_unref(pixbuf);
-
-  if (fd) {
-    g_io_channel_shutdown(fd, TRUE, &err);
-    g_io_channel_unref(fd);
-  }
-
-  if (line) g_free(line);
-
-  if (filename) g_free(filename);
-
-  return result;
+  return 0;
 }

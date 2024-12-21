@@ -1,21 +1,20 @@
-PREFIX := /usr/local
+# where to install this program
+PREFIX := /usr
+VERSION := 0.2.3
 
 # optimization cflags
-CFLAGS += -DPREFIX=\"$(PREFIX)\"
-CFLAGS += $(shell pkg-config gdk-3.0 --cflags) -std=gnu99
-CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers 
-CFLAGS += -Wno-sign-compare
+CFLAGS += -O2 -Wall -g `pkg-config gdk-2.0 gdk-pixbuf-2.0  --cflags` -DPREFIX=\"$(PREFIX)\" -DVERSION=\"$(VERSION)\"
 
-OBJS = src/hot-babe.o src/loader.o src/stats.o src/config.o
+OBJS = src/hot-babe.o src/loader.o src/config.o
 CC = gcc
-LIBS = $(shell pkg-config gdk-3.0 --libs) -lm
+LIBS = `pkg-config gdk-2.0 gdk-pixbuf-2.0  --libs`
 
-DOC = ChangeLog NEWS LICENSE CONTRIBUTORS copyright config.example
+DOC = ChangeLog NEWS TODO LICENSE CONTRIBUTORS copyright config.example
 
 all: hot-babe
 
 hot-babe: $(OBJS)
-	$(CC) $(LDFLAGS) -o hot-babe $(OBJS) $(LIBS)
+	$(CC) -o hot-babe $(OBJS) $(LIBS)
 
 clean:
 	rm -f hot-babe src/*.o

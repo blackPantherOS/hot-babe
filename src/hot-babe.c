@@ -1,7 +1,8 @@
-/* Hot-babe
+/* Hot-tux 
+ * Copyright (C) 2016 jiri vanek <judovana@email.cz>
+ * Hot-babe
  * Copyright (C) 2002 DindinX <David@dindinx.org>
  * Copyright (C) 2002 Bruno Bellamy.
- * Copyright (C) 2012-2013 Allan Wirth <allan@allanwirth.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the artistic License
@@ -15,210 +16,511 @@
  *
  */
 
-#include "hot-babe.h"
-
 /* general includes */
+#include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <math.h>
-#include <errno.h>
+#include <string.h>
+#ifdef __FreeBSD__
+#include <sys/time.h>
+#include <sys/resource.h>
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#ifndef CPUSTATES                                                              
+#include <sys/dkstat.h>
+#endif
+#endif                                                                         
 
-#include "def.h"
-#include "stats.h"
-#include "config.h"
+/* x11 includes */
+#include <gdk/gdk.h>
+#include <gdk/gdkx.h>
+#include <gdk-pixbuf/gdk-pixbuf.h>
 
-HotBabeData bm = {0}; /* Zero initialize */
+#include "loader.h"
 
-static void hotbabe_event(GdkEvent *event, gpointer data) {
-  if (event != NULL &&
-      (event->type == GDK_DESTROY ||
-       (event->type == GDK_BUTTON_PRESS &&
-        event->button.button == 3))) {
-    g_main_loop_quit(bm.loop);
-  }
+static int system_cpu(void);
+static void hotbabe_setup_samples(void);
+static void hotbabe_update(void);
+static void create_hotbabe_window(void);
+static void print_usage(void);
+
+/* global variables */
+
+typedef struct
+{
+  /* X11 stuff */
+  GdkWindow *win;        /* main window */
+  HotBabeAnim anim;
+  gint x,y;
+  guchar **pixels;
+  guchar *dest;
+
+  int samples;
+
+  /* CPU percentage stuff.  soon to go away */
+  int loadIndex;
+  u_int64_t *load, *total;
+  guint threshold;
+
+  /* optional stuff */
+  gboolean incremental;
+  gboolean noNice;
+  guint    delay;  
+} HotBabeData;
+
+HotBabeData bm;
+
+#if 0
+/* FIXME New BSD and Solaris code.. to check.
+ * doesn't work with Linux (getloadavg return 1.000) */
+static int system_cpu(void)
+{
+  int rc;
+  double loadavg[15];
+  rc=getloadavg(loadavg, 1); 
+  while( rc-- )
+    printf( "load = %f\n", loadavg[rc] );
+  rc=100*loadavg[0];
+  return rc;
+}
+#endif
+
+/* returns current CPU load in percent, 0 to 256 */
+static int system_cpu(void)
+{
+  unsigned int  cpuload;
+  int           i;
+#ifdef __linux__
+  u_int64_t     load, total, oload, ototal;
+  u_int64_t     ab, ac, ad, ae;
+  FILE         *stat;
+#endif
+#ifdef __FreeBSD__
+  long load, total, oload, ototal;
+  long ab, ac, ad, ae;
+  long cp_time[CPUSTATES];
+  size_t len = sizeof(cp_time);
+#endif
+
+#ifdef __linux__
+  stat = fopen("/proc/stat", "r");
+  fscanf(stat, "%*s %Ld %Ld %Ld %Ld", &ab, &ac, &ad, &ae);
+  fclose(stat);
+#endif
+#ifdef __FreeBSD__
+  if (sysctlbyname("kern.cp_time", &cp_time, &len, NULL, 0) < 0)
+    (void)fprintf(stderr, "Cannot get kern.cp_time");
+
+  ab = cp_time[CP_USER];
+  ac = cp_time[CP_NICE];
+  ad = cp_time[CP_SYS];
+  ae = cp_time[CP_IDLE];
+#endif
+
+
+  /* Find out the CPU load */
+  /* user + sys = load
+   * total = total */
+  load = ab + ad;  /* cpu.user + cpu.sys; */
+  if(!bm.noNice) load += ac;
+  total = ab + ac + ad + ae;  /* cpu.total; */
+
+  i = bm.loadIndex;
+  oload = bm.load[i];
+  ototal = bm.total[i];
+
+  bm.load[i] = load;
+  bm.total[i] = total;
+  bm.loadIndex = (i + 1) % bm.samples;
+
+  /*
+   *   Because the load returned from libgtop is a value accumulated
+   *   over time, and not the current load, the current load percentage
+   *   is calculated as the extra amount of work that has been performed
+   *   since the last sample. yah, right, what the fuck does that mean?
+   */
+  if (ototal == 0 || total==ototal)    /* ototal == 0 means that this is the first time we get here */
+    cpuload = 0;
+  else
+    cpuload = (256 * (load - oload)) / (total - ototal);
+
+  return cpuload;
 }
 
+GdkPixmap     *pixmap;
+GdkGC *gc;
+
 /* This is the function that actually creates the display widgets */
-static void create_hotbabe_window(void) {
-  GdkWindowAttr attr;
+static void create_hotbabe_window(void)
+{
+#define MASK GDK_BUTTON_PRESS_MASK | GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK
+  GdkWindowAttr  attr;
+  GdkBitmap     *mask;
   GdkScreen *defscrn;
+  GdkRectangle monitor_geometry;
+  gint primary_monitor;
 
-  if (!(defscrn = gdk_screen_get_default())) {
-    g_printerr("Error accessing default screen.\n");
-    exit(1);
-  }
-
-  if (bm.composited == AUTO) {
-    bm.composited = gdk_screen_is_composited(defscrn)?AUTO_COMPOSITE:AUTO_NOCOMPOSITE;
-  }
+  bm.anim.width = gdk_pixbuf_get_width(bm.anim.pixbuf[0]);
+  bm.anim.height = gdk_pixbuf_get_height(bm.anim.pixbuf[0]);
+  defscrn=gdk_screen_get_default();
+  primary_monitor = gdk_screen_get_primary_monitor(defscrn);
 
   attr.width = bm.anim.width;
   attr.height = bm.anim.height;
+  if( bm.x < 0 ) bm.x += 1 + gdk_screen_get_width(defscrn) - attr.width;
+  if( bm.y < 0 ) bm.y += 1 + gdk_screen_get_height(defscrn) - attr.height;
+
+  gdk_screen_get_monitor_geometry(defscrn, primary_monitor, &monitor_geometry);
+
   attr.x = bm.x;
   attr.y = bm.y;
-  if (attr.x < 0) attr.x += 1 + gdk_screen_get_width(defscrn) - attr.width;
-  if (attr.y < 0) attr.y += 1 + gdk_screen_get_height(defscrn) - attr.height;
-  attr.title = PNAME;
-  attr.event_mask = (GDK_BUTTON_PRESS_MASK | GDK_ENTER_NOTIFY_MASK |
-      GDK_LEAVE_NOTIFY_MASK);
+  attr.title = "hot-tux";
+  attr.event_mask = MASK;
   attr.wclass = GDK_INPUT_OUTPUT;
-  attr.type_hint = GDK_WINDOW_TYPE_HINT_DOCK;
-  attr.wmclass_name = PNAME;
-  attr.wmclass_class = PNAME;
+  attr.visual = gdk_visual_get_system();
+  attr.colormap = gdk_colormap_get_system();
+  attr.wmclass_name = "hot-tux";
+  attr.wmclass_class = "hot-tux";
   attr.window_type = GDK_WINDOW_TOPLEVEL;
-  attr.visual = NULL;
-  if (bm.composited == FORCE_COMPOSITE || bm.composited == AUTO_COMPOSITE) {
-    attr.visual = gdk_screen_get_rgba_visual(defscrn);
-    if (bm.composited == AUTO_COMPOSITE && !attr.visual)
-        bm.composited = AUTO_NOCOMPOSITE;
-  }
-  if (bm.composited == FORCE_NOCOMPOSITE || bm.composited == AUTO_NOCOMPOSITE) {
-    attr.visual = gdk_screen_get_system_visual(defscrn);
-  }
-  if (!attr.visual) {
-    g_printerr("Error getting gdk screen visual.\n");
-    exit(1);
-  }
-
-  g_print("Compositing: %s %sCompositing\n",
-      bm.composited==FORCE_NOCOMPOSITE||bm.composited==FORCE_COMPOSITE?"Force":"Auto",
-      bm.composited==FORCE_NOCOMPOSITE||bm.composited==AUTO_NOCOMPOSITE?"No ":"");
 
   bm.win = gdk_window_new(NULL, &attr,
-      GDK_WA_TITLE | GDK_WA_WMCLASS | GDK_WA_TYPE_HINT |
-      GDK_WA_VISUAL | GDK_WA_X | GDK_WA_Y);
-  if (!bm.win) {
-    g_printerr("Error making toplevel window\n");
-    exit(1);
+      GDK_WA_TITLE | GDK_WA_WMCLASS |
+      GDK_WA_VISUAL | GDK_WA_COLORMAP |
+      GDK_WA_X | GDK_WA_Y);
+  if (!bm.win)
+  {
+    fprintf(stderr, "Cannot make toplevel window\n");
+    exit (-1);
   }
   gdk_window_set_decorations(bm.win, 0);
   gdk_window_set_skip_taskbar_hint(bm.win, TRUE);
-  gdk_window_set_skip_pager_hint(bm.win, TRUE);
-  gdk_event_handler_set(hotbabe_event, NULL, NULL);
+  gdk_window_set_skip_pager_hint(bm.win, TRUE); 
+  gdk_window_set_type_hint(bm.win, GDK_WINDOW_TYPE_HINT_DOCK);
 //  gdk_window_set_keep_below(bm.win, TRUE);
 
-  if (bm.composited == FORCE_NOCOMPOSITE || bm.composited == AUTO_NOCOMPOSITE) {
-    gdk_window_shape_combine_region(bm.win, bm.anim.mask, 0, 0);
-  }
+  gdk_pixbuf_render_pixmap_and_mask( bm.anim.pixbuf[bm.anim.samples-1], &pixmap, &mask, 127 );
+
+  gdk_window_shape_combine_mask(bm.win, mask, 0, 0);
+  gdk_pixbuf_render_pixmap_and_mask( bm.anim.pixbuf[0], &pixmap, &mask, 127 );
+  gdk_window_set_back_pixmap(bm.win, pixmap, False);
 
   gdk_window_show(bm.win);
+  //gdk_window_move(bm.win, bm.x, bm.y);
+  
+  if (bm.x >= 0 && bm.y >= 0) {
+        gdk_window_move(bm.win, monitor_geometry.x + bm.x, monitor_geometry.y + bm.y);
+    } else {
+        int center_x = monitor_geometry.x + (monitor_geometry.width - bm.anim.width) / 2;
+        int center_y = monitor_geometry.y + (monitor_geometry.height - bm.anim.height) / 2;
+        gdk_window_move(bm.win, center_x, center_y);
+    }
+
+  gc = gdk_gc_new (pixmap);
+#undef MASK
 }
 
-static void hotbabe_update(gboolean force) {
-  double loadPercentage = system_cpu();
+static void hotbabe_update(void)
+{
+  guint   loadPercentage;
+  static guint   old_percentage = 0;
+  guint   i;
+  guchar *pixels1, *pixels2, *src1, *src2, *dest;
+  static gint    robinet = 0;
 
-  if (bm.threshold) {
-    if (loadPercentage < bm.threshold || bm.threshold > 255)
+  /* Find out the CPU load */
+  loadPercentage = system_cpu();
+
+  if (bm.threshold)
+  {
+    if (loadPercentage < bm.threshold || bm.threshold>255)
       loadPercentage = 0;
     else
-      loadPercentage = (loadPercentage - bm.threshold) * 256 /
-          (256 - bm.threshold);
+      loadPercentage = (loadPercentage-bm.threshold)*256/(256-bm.threshold);
   }
 
-  if (bm.incremental) {
-    loadPercentage = (loadPercentage + (bm.samples-1)*bm.oldPercentage) /
-        bm.samples;
-  }
+  robinet +=loadPercentage/50-3;
 
-  if (loadPercentage != bm.oldPercentage || force) {
-    cairo_t *cr;
-    cairo_surface_t *p3;
+  robinet = CLAMP(robinet, 0, 256);
 
-    bm.oldPercentage = loadPercentage;
-    size_t range = 256 / (bm.anim.samples - 1);
-    size_t index = loadPercentage / range;
+  if (bm.incremental)
+    loadPercentage = robinet;
 
-    if (index > bm.anim.samples - 1)
-      index = bm.anim.samples - 1;
+  if (loadPercentage != old_percentage)
+  {
+    gint range = 256  / (bm.anim.samples-1);
+    gint index = loadPercentage/range;
 
-    p3 = bm.anim.surface[index+((index == bm.anim.samples-1)?0:1)];
+    old_percentage = loadPercentage;
+    if  (index>bm.anim.samples-1) index = bm.anim.samples-1;
+    pixels1 = bm.pixels[index];
+    if (index  == bm.anim.samples-1) pixels2 = bm.pixels[index];
+    else pixels2 = bm.pixels[index+1];
 
-    loadPercentage -= range * floor(loadPercentage/range); /* modulo */
+    loadPercentage = loadPercentage % range;
+    dest = bm.dest; src1 = pixels1; src2 = pixels2;
+    for (i=0  ;  i<bm.anim.height*bm.anim.width ;  i++)
+    {
+      guint val, j;
 
-    cairo_rectangle_int_t rect = {0, 0, bm.anim.width, bm.anim.height};
-    cairo_region_t *reg = cairo_region_create_rectangle(&rect);
-    gdk_window_begin_paint_region(bm.win, reg);
-    cairo_region_destroy(reg);
-
-    if (!(cr = gdk_cairo_create(bm.win))) {
-      g_printerr("Error creating cairo object\n");
-      exit(1);
+      if (src1[3])
+      {
+        for (j=0;j<3;j++)
+        {
+          val = ((guint)*(src2++))*loadPercentage+((guint)*(src1++))*(range-loadPercentage);
+          *(dest++) = val/range;
+          //*(dest++) = (val >> 6);  // bad hack!
+        }
+        src1++;
+        src2++;
+      } else
+      {
+        src1+=4;src2+=4;dest+=3;
+      }
     }
 
-    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
-    cairo_paint(cr);
-    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-    cairo_set_source_surface(cr, p3, 0, 0);
-    cairo_paint_with_alpha(cr, 1);
-    cairo_set_source_surface(cr, bm.anim.surface[index], 0, 0);
-    cairo_paint_with_alpha(cr, 1 - loadPercentage / range);
-    cairo_destroy(cr);
-
-    gdk_window_end_paint(bm.win);
+    gdk_draw_rgb_image(pixmap, gc, 0, 0, bm.anim.width, bm.anim.height, GDK_RGB_DITHER_NONE,
+        bm.dest, 3 * bm.anim.width);
+    gdk_window_set_back_pixmap(bm.win, pixmap, False);
+    gdk_window_clear(bm.win);
   }
 }
 
-static gboolean hotbabe_source(gpointer ud) {
-  hotbabe_update(FALSE);
-  return TRUE;
-}
-
-int main(int argc, char **argv) {
-  GError *err = NULL;
-
-  /* initialize GDK */
-  if (!gdk_init_check(&argc, &argv)) {
-    g_printerr("GDK init failed, bye bye.  Check \"DISPLAY\" variable.\n");
-    exit(-1);
-  }
-
-  bm.samples = NUM_SAMPLES;
-  bm.incremental = FALSE;
-  bm.delay = 15;
-  bm.noNice = FALSE;
-  bm.nice = 0;
-  bm.dir = DEFAULT_DIR;
-  bm.x = -1;
-  bm.y = -1;
-  bm.composited = AUTO;
-  bm.oldPercentage = 0.0;
+static void hotbabe_setup_samples(void)
+{
+  int       i;
+  u_int64_t load = 0, total = 0;
 
   bm.loadIndex = 0;
-  bm.load = g_malloc0_n(bm.samples, sizeof(unsigned long long));
-  bm.total = g_malloc0_n(bm.samples, sizeof(unsigned long long));
+  bm.load = malloc(bm.samples * sizeof(u_int64_t));
+  bm.total = malloc(bm.samples * sizeof(u_int64_t));
+  for (i = 0; i < bm.samples;i++)
+  {
+    bm.load[i] = load;
+    bm.total[i] = total;
+  }
+}
 
-  bm.context = g_option_context_new("- interesting CPU Monitor");
-  g_option_context_add_main_entries(bm.context, cmd_options, NULL);
+static void print_version(void)
+{
+  g_print("hot-tux version " VERSION "\n\n");
+}
 
-  parse_conf();
+static void print_usage(void)
+{
+  g_print("Usage: hot-tux [OPTIONS]\n\n");
+  g_print("OPTIONS are from the following:\n\n");
+  g_print(" -t, --threshold n    use only the first picture before n%%.\n");
+  g_print(" -i, --incremental    incremental (slow) mode.\n");
+  g_print(" -d, --delay  n       update every n millisecondes.\n");
+  g_print(" -h, --help           show this message and exit.\n");
+  g_print(" -N, --noNice         don't count nice time in usage.\n");
+  g_print(" -n, --nice  n        set self-nice to n.\n");
+  g_print("     --dir directory  use images from directory.\n");
+  g_print("     --geometry {+|-}x{+|-}y  position the hot-tux.\n");
+  g_print(" -v, --version        show version and exit.\n");
+}
 
-  if (!g_option_context_parse(bm.context, &argc, &argv, &err)) {
-    g_printerr("Error parsing command line arguments: %s\n",
-        err->message);
-    exit(1);
+void parse_geometry( char *arg )
+{
+  char sign[2];
+  guint val[2];
+  int i = 0;
+  
+  i = sscanf( arg, "%c%u%c%u", &sign[0], &val[0], &sign[1], &val[1] );
+  if( i != 4 )
+    return;
+  
+  if( sign[0] == '+' ) bm.x = val[0];
+  if( sign[0] == '-' ) bm.x = -1-val[0];
+  if( sign[1] == '+' ) bm.y = val[1];
+  if( sign[1] == '-' ) bm.y = -1-val[1];
+}
+
+int main(int argc, char **argv)
+{
+  GdkEvent *event;
+
+  gint      i;
+  gchar *dir;
+  char conf[256];
+  FILE *f;
+
+  /* initialize GDK */
+  if (!gdk_init_check(&argc, &argv))
+  {
+    fprintf(stderr,
+        "GDK init failed, bye bye.  Check \"DISPLAY\" variable.\n");
+    exit(-1);
+  }
+  gdk_rgb_init();
+
+  /* zero data structure */
+  memset(&bm, 0, sizeof(bm));
+
+  bm.samples     = 16;
+  bm.incremental = FALSE;
+  bm.delay       = 15000;
+  bm.noNice      = FALSE;
+  bm.x = -1;
+  bm.y = -1;
+
+  dir            = NULL;
+
+
+  snprintf( conf, 256, "%s/.hot-tux/config", g_get_home_dir() );
+  f = fopen( conf, "r" );
+  if( f )
+  {
+    char line[256], *l;
+    guint uval;
+    gint val;
+    char sval[260];
+
+    while( (l=fgets( line, 255, f )) )
+    {
+      while( *l )
+      {
+        if( *l == '\n' || *l == '#' ) *l = 0;
+        l++;
+      }
+      if( !*line ) continue;
+
+      if( sscanf( line, "threshold %u", &uval ) == 1 )
+      {
+        bm.threshold = uval*256/100;
+        bm.threshold = MIN (255, bm.threshold);
+      } else if ( !strcmp(line, "incremental") )
+      {
+        bm.incremental = TRUE;
+      } else if (!strcmp(line, "noNice") )
+      {
+        bm.noNice = TRUE;
+      } else if ( sscanf( line, "nice %d", &val) == 1 )
+      {
+        nice( val );
+      } else if ( sscanf( line, "delay %u", &uval) == 1 )
+      {
+        bm.delay = uval*1000;
+      } else if ( sscanf( line, "dir %s", sval) == 1)
+      {
+        dir = strdup( sval );
+      } else if ( sscanf( line, "geometry %s", sval) == 1)
+      {
+        parse_geometry( sval );
+      }
+    }
+    fclose(f);
   }
 
-  bm.threshold = CLAMP(bm.threshold/100.0, 0.0, 1.0);
-
-  if (bm.nice) {
-    errno = 0;
-    if (nice(bm.nice) == -1 && errno != 0) {
-      g_printerr("Failed to nice!\n");
+  for (i=1 ; i<argc ; i++)
+  {
+    if (!strcmp(argv[i], "--threshold") || !strcmp(argv[i], "-t"))
+    {
+      i++;
+      if  (i<argc)
+      {
+        bm.threshold = atoi(argv[i])*256/100;
+        bm.threshold = MIN (255, bm.threshold);
+      }        
+    } else if (!strcmp(argv[i], "--version") || !strcmp(argv[i], "-v"))
+    {
+      print_version();
+      exit(0);
+    } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h"))
+    {
+      print_usage();
+      exit(0);
+    } else if (!strcmp(argv[i], "--incremental") || !strcmp(argv[i], "-i"))
+    {
+      bm.incremental = TRUE;
+    } else if (!strcmp(argv[i], "--noNice") || !strcmp(argv[i], "-N"))
+    {
+      bm.noNice = TRUE;
+    } else if (!strcmp(argv[i], "--nice") || !strcmp(argv[i], "-n"))
+    {
+      i++;
+      if  (i<argc)
+      {
+        nice( atoi(argv[i]) );
+      }
+    } else if (!strcmp(argv[i], "--delay") || !strcmp(argv[i], "-d"))
+    {
+      i++;
+      if  (i<argc)
+      {
+        bm.delay = atoi(argv[i])*1000;
+      }        
+    } else if (!strcmp(argv[i], "--dir"))
+    {
+      i++;
+      if  (i<argc)
+      {
+        dir = argv[i];
+      }        
+    } else if (!strcmp(argv[i], "--geometry"))
+    {
+      i++;
+      if  (i<argc)
+      {
+        parse_geometry( argv[i] );
+      }        
     }
   }
 
-  if (!hotbabe_load_pics()) {
-    g_printerr("Couldn't load pictures\n");
-    return 1;
+  if( dir != NULL ) {
+    char path[256], home[256];
+    snprintf( path, 256, PREFIX "/share/hot-tux/%s", dir );
+    snprintf( home, 256, "%s/.hot-tux/%s", g_get_home_dir(), dir );
+    if( load_anim( &bm.anim, path ) &&
+        load_anim( &bm.anim, home ) &&
+        load_anim( &bm.anim, dir ) ) {
+      fprintf( stderr, "Can't find pictures\n" );
+      return 1;
+    }
+  } else {
+    if( load_anim( &bm.anim, PREFIX "/share/hot-tux/hb01" ) &&
+        load_anim( &bm.anim, "hb01" ) ) {
+      fprintf( stderr, "Can't find pictures\n" );
+      return 1;
+    }
   }
-
   create_hotbabe_window();
 
-  hotbabe_update(TRUE);
+  bm.pixels = malloc( sizeof(guchar*) * bm.anim.samples );
+  for( i = 0 ; i < bm.anim.samples ; i++ )
+    bm.pixels[i] = gdk_pixbuf_get_pixels( bm.anim.pixbuf[i] );
+  bm.dest = malloc( bm.anim.width * bm.anim.height * 3 );
 
-  bm.loop = g_main_loop_new(NULL, FALSE);
-  g_timeout_add(bm.delay, hotbabe_source, NULL);
-  g_main_loop_run(bm.loop);
+  hotbabe_setup_samples();
 
+  while (1)
+  {
+    while (gdk_events_pending())
+    {
+      event = gdk_event_get();
+      if (event)
+      {
+        switch (event->type)
+        {
+          case GDK_DESTROY:
+            gdk_exit(0);
+            exit(0);
+            break;
+          case GDK_BUTTON_PRESS:
+            if (event->button.button == 3)
+            {
+              exit(0);
+              break;
+            }
+            break;
+          default:
+            break;
+        }
+      }
+    }
+    usleep(bm.delay);
+    hotbabe_update();
+  }
   return 0;
 }
+
